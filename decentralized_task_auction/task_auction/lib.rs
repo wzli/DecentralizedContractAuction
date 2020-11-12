@@ -16,6 +16,9 @@ mod task_auction {
         jury: AccountId,
         deadline: Timestamp,
         extension: Timestamp,
+
+        contractor_confirmation: Option<bool>,
+        client_confirmation: Option<bool>,
     }
 
     #[ink(event)]
@@ -24,6 +27,22 @@ mod task_auction {
         bid: Balance,
         #[ink(topic)]
         contractor: AccountId,
+    }
+
+    #[derive(Debug, scale::Encode, scale::Decode)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+    pub enum Source {
+        Contractor,
+        Client,
+        Jury,
+    }
+
+    #[ink(event)]
+    pub struct Confirm {
+        #[ink(topic)]
+        source: Source,
+        #[ink(topic)]
+        confirmation: bool,
     }
 
     impl TaskAuction {
@@ -45,9 +64,12 @@ mod task_auction {
                 jury,
                 deadline: Self::env().block_timestamp() + duration,
                 extension,
+                contractor_confirmation: None,
+                client_confirmation: None,
             }
         }
 
+        // TODO: add tests
         #[ink(message, payable)]
         pub fn bid(&mut self) {
             // verify bid
@@ -61,17 +83,7 @@ mod task_auction {
         // TODO: add tests
         #[ink(message)]
         pub fn cancel(&mut self) {
-            if Self::env().caller() == self.client {
-                // client cancelled, refund contractor and terminate auction
-                let refund = if Self::env().block_timestamp() <= self.deadline {
-                    self.current_bid
-                } else {
-                    // full payment if past deadline
-                    self.current_bid * Balance::from(self.pay_multiplier)
-                };
-                Self::transfer_or_terminate(refund, self.contractor);
-                Self::env().terminate_contract(self.client);
-            } else if Self::env().caller() == self.contractor {
+            if Self::env().caller() == self.contractor {
                 // contractor cancelled
                 if Self::env().block_timestamp() <= self.deadline {
                     // refund contractor if pre deadline
@@ -82,6 +94,63 @@ mod task_auction {
                     Self::env().balance() / Balance::from(self.pay_multiplier + 1),
                     self.client,
                 );
+            } else if Self::env().caller() == self.client {
+                // client cancelled, refund contractor and terminate auction
+                let refund = if Self::env().block_timestamp() <= self.deadline {
+                    self.current_bid
+                } else {
+                    // full payment if past deadline
+                    self.current_bid * Balance::from(self.pay_multiplier)
+                };
+                Self::transfer_or_terminate(refund, self.contractor);
+                Self::env().terminate_contract(self.client);
+            }
+        }
+
+        #[ink(message)]
+        pub fn confirm(&mut self, confirmation: bool) {
+            assert!(Self::env().block_timestamp() > self.deadline);
+            // parse confirmation
+            let source = if Self::env().caller() == self.contractor {
+                self.contractor_confirmation = Some(confirmation);
+                Source::Contractor
+            } else if Self::env().caller() == self.client {
+                self.client_confirmation = Some(confirmation);
+                Source::Client
+            } else if Self::env().caller() == self.jury {
+                match (self.contractor_confirmation, self.client_confirmation) {
+                    (Some(true), Some(false)) => Source::Jury,
+                    _ => return,
+                }
+            } else {
+                return;
+            };
+            // notify subscribers
+            Self::env().emit_event(Confirm {
+                confirmation,
+                source,
+            });
+            // check if termination conditions are satisfied
+            if let Some(true) = self.contractor_confirmation {
+                if let Some(true) = self.client_confirmation {
+                    // mutually confirmed, pay contractor and terminate
+                    Self::transfer_or_terminate(
+                        self.current_bid * Balance::from(self.pay_multiplier),
+                        self.contractor,
+                    );
+                    Self::env().terminate_contract(self.client);
+                } else if Self::env().caller() == self.jury {
+                    // let jury resolve dispute (for pay)
+                    Self::transfer_or_terminate(self.current_bid, self.jury);
+                    if confirmation {
+                        // pay contractor if task deemed to be fulfilled
+                        Self::transfer_or_terminate(
+                            self.current_bid * Balance::from(self.pay_multiplier),
+                            self.contractor,
+                        );
+                    }
+                    Self::env().terminate_contract(self.client);
+                }
             }
         }
 
@@ -96,6 +165,7 @@ mod task_auction {
         fn update_bid(&mut self, bid: Balance, contractor: AccountId) {
             self.current_bid = bid;
             self.contractor = contractor;
+            self.contractor_confirmation = None;
             self.deadline = Timestamp::max(
                 self.deadline,
                 Self::env().block_timestamp() + self.extension,
