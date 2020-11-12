@@ -35,7 +35,6 @@ mod task_auction {
             duration: Timestamp,
             extension: Timestamp,
         ) -> Self {
-            // TODO: add input checks
             let client = Self::env().caller();
             Self {
                 description,
@@ -55,50 +54,34 @@ mod task_auction {
             assert!(Self::env().block_timestamp() <= self.deadline);
             assert!(Self::env().transferred_balance() * 1000 < self.current_bid * 995);
             // refund previous bidder
-            Self::env().transfer(self.contractor, self.current_bid);
-            // update lowest bid
-            self.contractor = Self::env().caller();
-            self.current_bid = Self::env().transferred_balance();
-            // extend deadline
-            self.deadline = Timestamp::max(
-                self.deadline,
-                Self::env().block_timestamp() + self.extension,
-            );
-            // notify subscribers
-            Self::env().emit_event(Bid {
-                bid: self.current_bid,
-                contractor: self.contractor,
-            });
+            Self::transfer_or_terminate(self.current_bid, self.contractor);
+            self.update_bid(Self::env().transferred_balance(), Self::env().caller());
         }
 
         // TODO: add tests
         #[ink(message)]
         pub fn cancel(&mut self) {
-            let caller = Self::env().caller();
-            if caller == self.client {
+            if Self::env().caller() == self.client {
                 // client cancelled, refund contractor and terminate auction
-                let refund = if Self::env().block_timestamp() > self.deadline {
+                let refund = if Self::env().block_timestamp() <= self.deadline {
+                    self.current_bid
+                } else {
                     // full payment if past deadline
                     self.current_bid * Balance::from(self.pay_multiplier)
-                } else {
-                    self.current_bid
                 };
-                Self::env().terminate_contract(
-                    match Self::env().transfer(self.contractor, refund) {
-                        Ok(_) => self.client,
-                        Err(_) => self.contractor,
-                    },
-                );
-            } else if caller == self.contractor {
-                // contractor cancelled, reset winning bid
-                self.contractor = self.client;
-                // refund contractor if pre deadline
+                Self::transfer_or_terminate(refund, self.contractor);
+                Self::env().terminate_contract(self.client);
+            } else if Self::env().caller() == self.contractor {
+                // contractor cancelled
                 if Self::env().block_timestamp() <= self.deadline {
-                    if let Err(_) = Self::env().transfer(caller, self.current_bid) {
-                        Self::env().terminate_contract(caller);
-                    }
+                    // refund contractor if pre deadline
+                    Self::transfer_or_terminate(self.current_bid, self.contractor);
                 }
-                self.current_bid = Self::env().balance() / Balance::from(self.pay_multiplier + 1);
+                // reset bid
+                self.update_bid(
+                    Self::env().balance() / Balance::from(self.pay_multiplier + 1),
+                    self.client,
+                );
             }
         }
 
@@ -106,6 +89,24 @@ mod task_auction {
         pub fn test_func(&self) {
             // println!("{:?}", Self::env().block_timestamp());
             // println!("rent {:?}", Self::env().rent_allowance());
+        }
+
+        // helper functions
+
+        fn update_bid(&mut self, bid: Balance, contractor: AccountId) {
+            self.current_bid = bid;
+            self.contractor = contractor;
+            self.deadline = Timestamp::max(
+                self.deadline,
+                Self::env().block_timestamp() + self.extension,
+            );
+            Self::env().emit_event(Bid { bid, contractor });
+        }
+
+        fn transfer_or_terminate(balance: Balance, account: AccountId) {
+            if let Err(_) = Self::env().transfer(account, balance) {
+                Self::env().terminate_contract(account);
+            }
         }
     }
 
