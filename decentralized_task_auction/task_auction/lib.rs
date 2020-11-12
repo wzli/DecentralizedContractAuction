@@ -45,6 +45,9 @@ mod task_auction {
         confirmation: bool,
     }
 
+    #[ink(event)]
+    pub struct Dispute;
+
     impl TaskAuction {
         #[ink(constructor)]
         pub fn new(
@@ -72,10 +75,15 @@ mod task_auction {
         // TODO: add tests
         #[ink(message, payable)]
         pub fn bid(&mut self) {
-            // verify bid
+            // only allow bids before deadline
             assert!(Self::env().block_timestamp() <= self.deadline);
-            assert!(Self::env().transferred_balance() * 1000 < self.current_bid * 995);
-            // refund previous bidder
+            // bid must be within %50 - %99 of previous bid
+            assert!(Self::env().transferred_balance() * 2 > self.current_bid);
+            assert!(Self::env().transferred_balance() * 100 < self.current_bid * 99);
+            // disallow bids from jury or previous bidder (to discourage spam)
+            assert_ne!(Self::env().caller(), self.jury);
+            assert_ne!(Self::env().caller(), self.contractor);
+            // refund previous bidder and update current bid
             Self::transfer_or_terminate(self.current_bid, self.contractor);
             self.update_bid(Self::env().transferred_balance(), Self::env().caller());
         }
@@ -150,6 +158,9 @@ mod task_auction {
                         );
                     }
                     Self::env().terminate_contract(self.client);
+                } else {
+                    // dispute triggered
+                    Self::env().emit_event(Dispute {});
                 }
             }
         }
