@@ -29,20 +29,12 @@ mod task_auction {
         contractor: AccountId,
     }
 
-    #[derive(Debug, scale::Encode, scale::Decode)]
-    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
-    pub enum Source {
-        Contractor,
-        Client,
-        Jury,
-    }
-
     #[ink(event)]
     pub struct Confirm {
         #[ink(topic)]
-        source: Source,
-        #[ink(topic)]
         confirmation: bool,
+        #[ink(topic)]
+        source: AccountId,
     }
 
     #[ink(event)]
@@ -76,16 +68,17 @@ mod task_auction {
         #[ink(message, payable)]
         pub fn bid(&mut self) {
             // only allow bids before deadline
-            assert!(Self::env().block_timestamp() <= self.deadline);
+            assert!(self.is_open());
             // bid must be within %50 - %99 of previous bid
             assert!(Self::env().transferred_balance() * 2 > self.current_bid);
             assert!(Self::env().transferred_balance() * 100 < self.current_bid * 99);
             // disallow bids from jury or previous bidder (to discourage spam)
-            assert_ne!(Self::env().caller(), self.jury);
-            assert_ne!(Self::env().caller(), self.contractor);
+            let caller = Self::env().caller();
+            assert_ne!(caller, self.jury);
+            assert_ne!(caller, self.contractor);
             // refund previous bidder and update current bid
             Self::transfer_or_terminate(self.current_bid, self.contractor);
-            self.update_bid(Self::env().transferred_balance(), Self::env().caller());
+            self.update_bid(Self::env().transferred_balance(), caller);
         }
 
         // TODO: add tests
@@ -93,7 +86,7 @@ mod task_auction {
         pub fn cancel(&mut self) {
             if Self::env().caller() == self.contractor {
                 // contractor cancelled
-                if Self::env().block_timestamp() <= self.deadline {
+                if self.is_open() {
                     // refund contractor if pre deadline
                     Self::transfer_or_terminate(self.current_bid, self.contractor);
                 }
@@ -104,7 +97,7 @@ mod task_auction {
                 );
             } else if Self::env().caller() == self.client {
                 // client cancelled, refund contractor and terminate auction
-                let refund = if Self::env().block_timestamp() <= self.deadline {
+                let refund = if self.is_open() {
                     self.current_bid
                 } else {
                     // full payment if past deadline
@@ -117,27 +110,23 @@ mod task_auction {
 
         #[ink(message)]
         pub fn confirm(&mut self, confirmation: bool) {
-            assert!(Self::env().block_timestamp() > self.deadline);
+            assert!(!self.is_open());
+            let source = Self::env().caller();
             // parse confirmation
-            let source = if Self::env().caller() == self.contractor {
-                self.contractor_confirmation = Some(confirmation);
-                Source::Contractor
-            } else if Self::env().caller() == self.client {
+            if source == self.client {
                 self.client_confirmation = Some(confirmation);
-                Source::Client
-            } else if Self::env().caller() == self.jury {
-                match (self.contractor_confirmation, self.client_confirmation) {
-                    (Some(true), Some(false)) => Source::Jury,
-                    _ => return,
-                }
-            } else {
-                return;
-            };
-            // notify subscribers
-            Self::env().emit_event(Confirm {
-                confirmation,
-                source,
-            });
+                Self::env().emit_event(Confirm {
+                    confirmation,
+                    source,
+                });
+            }
+            if source == self.contractor {
+                self.contractor_confirmation = Some(confirmation);
+                Self::env().emit_event(Confirm {
+                    confirmation,
+                    source,
+                });
+            }
             // check if termination conditions are satisfied
             if let Some(true) = self.contractor_confirmation {
                 if let Some(true) = self.client_confirmation {
@@ -147,8 +136,12 @@ mod task_auction {
                         self.contractor,
                     );
                     Self::env().terminate_contract(self.client);
-                } else if Self::env().caller() == self.jury {
+                } else if source == self.jury {
                     // let jury resolve dispute (for pay)
+                    Self::env().emit_event(Confirm {
+                        confirmation,
+                        source,
+                    });
                     Self::transfer_or_terminate(self.current_bid, self.jury);
                     if confirmation {
                         // pay contractor if task deemed to be fulfilled
@@ -165,10 +158,22 @@ mod task_auction {
             }
         }
 
-        #[ink(message, payable)]
-        pub fn test_func(&self) {
-            // println!("{:?}", Self::env().block_timestamp());
-            // println!("rent {:?}", Self::env().rent_allowance());
+        #[ink(message)]
+        pub fn extend_deadline(&mut self, extension: Timestamp) -> Timestamp {
+            assert!(self.is_open());
+            assert_eq!(Self::env().caller(), self.client);
+            self.deadline += extension;
+            self.deadline
+        }
+
+        #[ink(message)]
+        pub fn is_open(&self) -> bool {
+            Self::env().block_timestamp() < self.deadline
+        }
+
+        #[ink(message)]
+        pub fn get_blocktime(&self) -> Timestamp {
+            Self::env().block_timestamp()
         }
 
         // helper functions
@@ -194,56 +199,140 @@ mod task_auction {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use ink_env::{call, test};
         use ink_lang as ink;
 
-        fn set_balance(balance: Balance) {
-            ink_env::test::set_account_balance::<ink_env::DefaultEnvironment>(
-                ink_env::test::get_current_contract_account_id::<ink_env::DefaultEnvironment>()
-                    .unwrap(),
-                balance,
-            )
-            .expect("Cannot set account balance");
-        }
-
-        fn set_sender(sender: AccountId, pay: Balance) {
-            let callee =
-                ink_env::test::get_current_contract_account_id::<ink_env::DefaultEnvironment>()
-                    .unwrap();
-            let data = ink_env::test::CallData::new(ink_env::call::Selector::new([0x00; 4])); // dummy
-            ink_env::test::push_execution_context::<Environment>(
-                sender, callee, 1000000, pay, data,
-            );
-        }
-
-        #[ink::test]
-        fn it_works() {
-            let accounts = ink_env::test::default_accounts::<ink_env::DefaultEnvironment>()
-                .expect("Cannot get accounts");
-            println!(
-                "a: {:?}",
-                ink_env::test::get_account_balance::<ink_env::DefaultEnvironment>(accounts.alice)?
-            );
-            //println!("b: {:?}", ink_env::test::get_account_balance::<ink_env::DefaultEnvironment>(accounts.bob)?);
-            //println!("c: {:?}", ink_env::test::get_account_balance::<ink_env::DefaultEnvironment>(accounts.charlie)?);
-
-            set_balance(100);
-            let task_auction = TaskAuction::new("test desc".into(), 2, accounts.bob, 10, 4);
-            ink_env::test::advance_block::<ink_env::DefaultEnvironment>()?;
-            task_auction.test_func();
-            set_sender(accounts.bob, 10000);
-            ink_env::test::advance_block::<ink_env::DefaultEnvironment>()?;
-            task_auction.test_func();
-            task_auction.test_func();
-            println!(
-                "a: {:?}",
-                ink_env::test::get_account_balance::<ink_env::DefaultEnvironment>(accounts.alice)?
-            );
-        }
+        const BLOCK_DURATION: Timestamp = 5;
 
         #[ink::test]
         #[should_panic]
         fn pay_multiplier_overflow() {
             TaskAuction::new("test desc".into(), 255, AccountId::from([1; 32]), 0, 0);
+        }
+
+        #[ink::test]
+        fn no_bidders() {
+            let mut task_auction = new_task_auction(1000, 1, BLOCK_DURATION, 0);
+            assert!(task_auction.is_open());
+            advance_block();
+            assert!(!task_auction.is_open());
+        }
+
+        #[ink::test]
+        fn bid_extension() {}
+
+        #[ink::test]
+        fn bid_closed() {}
+
+        // helper functions
+
+        fn new_task_auction(
+            endowment: Balance,
+            pay_multiplier: u8,
+            duration: Timestamp,
+            extension: Timestamp,
+        ) -> TaskAuction {
+            // given
+            let accounts = default_accounts();
+            set_sender(accounts.alice);
+            set_balance(contract_id(), endowment);
+            TaskAuction::new(
+                "task descripton".into(),
+                pay_multiplier,
+                accounts.bob,
+                duration,
+                extension,
+            )
+
+            /*
+                        description: String,
+                        pay_multiplier: u8,
+                        jury: AccountId,
+                        duration: Timestamp,
+                        extension: Timestamp,
+            */
+
+            /*
+            // when
+            call_payable(
+                10,
+                contract_id(),
+                accounts.eve,
+                ink_env::call::Selector::new([0xCA, 0xFE, 0xBA, 0xBE]),
+                || {
+                    give_me.accumulate_value();
+                    ()
+                },
+            );
+            */
+        }
+
+        fn advance_block() {
+            ink_env::test::advance_block::<ink_env::DefaultEnvironment>()
+                .expect("Cannot advance block");
+        }
+
+        fn contract_id() -> AccountId {
+            ink_env::test::get_current_contract_account_id::<ink_env::DefaultEnvironment>()
+                .expect("Cannot get contract id")
+        }
+
+        fn set_sender(sender: AccountId) {
+            let callee =
+                ink_env::account_id::<ink_env::DefaultEnvironment>().unwrap_or([0x0; 32].into());
+            test::push_execution_context::<Environment>(
+                sender,
+                callee,
+                1000000,
+                1000000,
+                test::CallData::new(call::Selector::new([0x00; 4])), // dummy
+            );
+        }
+
+        fn default_accounts() -> ink_env::test::DefaultAccounts<ink_env::DefaultEnvironment> {
+            ink_env::test::default_accounts::<ink_env::DefaultEnvironment>()
+                .expect("Off-chain environment should have been initialized already")
+        }
+
+        fn set_balance(account_id: AccountId, balance: Balance) {
+            ink_env::test::set_account_balance::<ink_env::DefaultEnvironment>(account_id, balance)
+                .expect("Cannot set account balance");
+        }
+
+        fn get_balance(account_id: AccountId) -> Balance {
+            ink_env::test::get_account_balance::<ink_env::DefaultEnvironment>(account_id)
+                .expect("Cannot set account balance")
+        }
+
+        /// Calls a payable message, increases the contract balance before
+        /// invoking `f`.
+        fn call_payable<F>(
+            amount: Balance,
+            contract_id: AccountId,
+            from: AccountId,
+            selector: ink_env::call::Selector,
+            f: F,
+        ) where
+            F: FnOnce() -> (),
+        {
+            set_sender(from);
+
+            let mut data = ink_env::test::CallData::new(selector);
+            data.push_arg(&from);
+
+            // Push the new execution context which sets `from` as caller and
+            // the `amount` as the value which the contract  will see as transferred
+            // to it.
+            ink_env::test::push_execution_context::<ink_env::DefaultEnvironment>(
+                from,
+                contract_id,
+                1000000,
+                amount,
+                data,
+            );
+
+            set_balance(contract_id, get_balance(contract_id) + amount);
+            f();
         }
     }
 }
