@@ -17,8 +17,8 @@ mod task_auction {
         deadline: Timestamp,
         extension: Timestamp,
 
-        contractor_confirmation: Option<bool>,
-        client_confirmation: Option<bool>,
+        contractor_confirm: Option<bool>,
+        client_confirm: Option<bool>,
     }
 
     #[ink(event)]
@@ -32,13 +32,19 @@ mod task_auction {
     #[ink(event)]
     pub struct Confirm {
         #[ink(topic)]
-        confirmation: bool,
+        value: bool,
         #[ink(topic)]
         source: AccountId,
     }
 
     #[ink(event)]
-    pub struct Dispute;
+    pub struct Dispute {}
+
+    #[ink(event)]
+    pub struct Extend {
+        #[ink(topic)]
+        deadline: Timestamp,
+    }
 
     impl TaskAuction {
         #[ink(constructor)]
@@ -49,23 +55,21 @@ mod task_auction {
             duration: Timestamp,
             extension: Timestamp,
         ) -> Self {
-            let client = Self::env().caller();
             Self {
                 description,
                 pay_multiplier,
-                current_bid: Self::env().transferred_balance() / Balance::from(pay_multiplier + 1),
-                contractor: client,
-                client,
+                current_bid: Self::env().balance() / Balance::from(pay_multiplier + 1),
+                contractor: Self::env().account_id(),
+                client: Self::env().caller(),
                 jury,
                 deadline: Self::env().block_timestamp() + duration,
                 extension,
-                contractor_confirmation: None,
-                client_confirmation: None,
+                contractor_confirm: None,
+                client_confirm: None,
             }
         }
 
-        // TODO: add tests
-        #[ink(message, payable)]
+        #[ink(message, payable, selector = "0xCAFEBABE")]
         pub fn bid(&mut self) {
             // only allow bids before deadline
             assert!(self.is_open());
@@ -109,27 +113,24 @@ mod task_auction {
         }
 
         #[ink(message)]
-        pub fn confirm(&mut self, confirmation: bool) {
+        pub fn confirm(&mut self, value: bool) {
             assert!(!self.is_open());
             let source = Self::env().caller();
             // parse confirmation
             if source == self.client {
-                self.client_confirmation = Some(confirmation);
-                Self::env().emit_event(Confirm {
-                    confirmation,
-                    source,
-                });
-            }
-            if source == self.contractor {
-                self.contractor_confirmation = Some(confirmation);
-                Self::env().emit_event(Confirm {
-                    confirmation,
-                    source,
-                });
+                self.client_confirm = Some(value);
+                Self::env().emit_event(Confirm { value, source });
+                // represent no bidder case as well
+                if self.contractor == Self::env().account_id() {
+                    self.contractor_confirm = Some(value);
+                }
+            } else if source == self.contractor {
+                self.contractor_confirm = Some(value);
+                Self::env().emit_event(Confirm { value, source });
             }
             // check if termination conditions are satisfied
-            if let Some(true) = self.contractor_confirmation {
-                if let Some(true) = self.client_confirmation {
+            if let Some(true) = self.contractor_confirm {
+                if let Some(true) = self.client_confirm {
                     // mutually confirmed, pay contractor and terminate
                     Self::transfer_or_terminate(
                         self.current_bid * Balance::from(self.pay_multiplier),
@@ -138,12 +139,9 @@ mod task_auction {
                     Self::env().terminate_contract(self.client);
                 } else if source == self.jury {
                     // let jury resolve dispute (for pay)
-                    Self::env().emit_event(Confirm {
-                        confirmation,
-                        source,
-                    });
+                    Self::env().emit_event(Confirm { value, source });
                     Self::transfer_or_terminate(self.current_bid, self.jury);
-                    if confirmation {
+                    if value {
                         // pay contractor if task deemed to be fulfilled
                         Self::transfer_or_terminate(
                             self.current_bid * Balance::from(self.pay_multiplier),
@@ -160,9 +158,12 @@ mod task_auction {
 
         #[ink(message)]
         pub fn extend_deadline(&mut self, extension: Timestamp) -> Timestamp {
-            assert!(self.is_open());
             assert_eq!(Self::env().caller(), self.client);
+            assert!(self.is_open() || self.contractor == Self::env().account_id());
             self.deadline += extension;
+            Self::env().emit_event(Extend {
+                deadline: self.deadline,
+            });
             self.deadline
         }
 
@@ -172,8 +173,8 @@ mod task_auction {
         }
 
         #[ink(message)]
-        pub fn get_blocktime(&self) -> Timestamp {
-            Self::env().block_timestamp()
+        pub fn get_current_bid(&self) -> Balance {
+            self.current_bid
         }
 
         // helper functions
@@ -181,12 +182,13 @@ mod task_auction {
         fn update_bid(&mut self, bid: Balance, contractor: AccountId) {
             self.current_bid = bid;
             self.contractor = contractor;
-            self.contractor_confirmation = None;
-            self.deadline = Timestamp::max(
-                self.deadline,
-                Self::env().block_timestamp() + self.extension,
-            );
+            self.contractor_confirm = None;
             Self::env().emit_event(Bid { bid, contractor });
+            let deadline = Self::env().block_timestamp() + self.extension;
+            if deadline > self.deadline {
+                self.deadline = deadline;
+                Self::env().emit_event(Extend { deadline });
+            }
         }
 
         fn transfer_or_terminate(balance: Balance, account: AccountId) {
@@ -205,24 +207,100 @@ mod task_auction {
         const BLOCK_DURATION: Timestamp = 5;
 
         #[ink::test]
-        #[should_panic]
+        #[should_panic(expected = "attempt to add with overflow")]
         fn pay_multiplier_overflow() {
             TaskAuction::new("test desc".into(), 255, AccountId::from([1; 32]), 0, 0);
         }
 
         #[ink::test]
-        fn no_bidders() {
-            let mut task_auction = new_task_auction(1000, 1, BLOCK_DURATION, 0);
-            assert!(task_auction.is_open());
-            advance_block();
-            assert!(!task_auction.is_open());
+        #[should_panic(
+            expected = "`(left != right)`\n  left: `AccountId([2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2])`,\n right: `AccountId([2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2])`"
+        )]
+        fn bid_jury_reject() {
+            let mut task_auction = new_task_auction(100, 1, BLOCK_DURATION, 0);
+            assert_eq!(task_auction.get_current_bid(), 50);
+            let accounts = default_accounts();
+            call_payable(49, accounts.bob, [0xCA, 0xFE, 0xBA, 0xBE], || {
+                task_auction.bid();
+                ()
+            });
         }
+
+        #[ink::test]
+        #[should_panic(
+            expected = "Self::env().transferred_balance() * 100 < self.current_bid * 99"
+        )]
+        fn bid_below_increment() {
+            let mut task_auction = new_task_auction(100, 1, BLOCK_DURATION, 0);
+            assert_eq!(task_auction.get_current_bid(), 50);
+            let accounts = default_accounts();
+            call_payable(50, accounts.charlie, [0xCA, 0xFE, 0xBA, 0xBE], || {
+                task_auction.bid();
+                ()
+            });
+        }
+
+        #[ink::test]
+        #[should_panic(expected = "Self::env().transferred_balance() * 2 > self.current_bid")]
+        fn bid_devalue_reject() {
+            let mut task_auction = new_task_auction(100, 1, BLOCK_DURATION, 0);
+            assert_eq!(task_auction.get_current_bid(), 50);
+            let accounts = default_accounts();
+            call_payable(10, accounts.charlie, [0xCA, 0xFE, 0xBA, 0xBE], || {
+                task_auction.bid();
+                ()
+            });
+        }
+
+        #[ink::test]
+        #[should_panic(expected = "self.is_open()")]
+        fn bid_closed() {
+            let mut task_auction = new_task_auction(1000, 1, BLOCK_DURATION, 0);
+            advance_block();
+            advance_block();
+            let accounts = default_accounts();
+            set_sender(accounts.bob);
+            task_auction.bid();
+        }
+
+        #[ink::test]
+        fn bid_rally() {}
 
         #[ink::test]
         fn bid_extension() {}
 
         #[ink::test]
-        fn bid_closed() {}
+        fn no_bidders() {
+            // create auction
+            let endowment = 1000;
+            let mut task_auction = new_task_auction(endowment, 1, BLOCK_DURATION, 0);
+            // check that auction is closed before confirm
+            assert!(task_auction.is_open());
+            advance_block();
+            assert!(!task_auction.is_open());
+            // non-client are ignored
+            let accounts = default_accounts();
+            set_sender(accounts.bob);
+            task_auction.confirm(true);
+            task_auction.confirm(false);
+            // if client terminate only if true
+            set_sender(accounts.alice);
+            task_auction.confirm(false);
+            let alice_balance = get_balance(accounts.alice);
+            // compensate for extra pay accumulation, due contract self transfer broken in off-chain tests
+            set_balance(contract_id(), endowment / 2);
+            // check that contract terminated after confirmation
+            ink_env::test::assert_contract_termination::<ink_env::DefaultEnvironment, _>(
+                move || task_auction.confirm(true),
+                accounts.alice,
+                endowment,
+            );
+            // ensure that original owner received full funds
+            assert_eq!(alice_balance + endowment, get_balance(accounts.alice));
+            // one event for each confirm
+            let emitted_events = ink_env::test::recorded_events().collect::<Vec<_>>();
+            assert_eq!(2, emitted_events.len());
+        }
 
         // helper functions
 
@@ -243,28 +321,6 @@ mod task_auction {
                 duration,
                 extension,
             )
-
-            /*
-                        description: String,
-                        pay_multiplier: u8,
-                        jury: AccountId,
-                        duration: Timestamp,
-                        extension: Timestamp,
-            */
-
-            /*
-            // when
-            call_payable(
-                10,
-                contract_id(),
-                accounts.eve,
-                ink_env::call::Selector::new([0xCA, 0xFE, 0xBA, 0xBE]),
-                || {
-                    give_me.accumulate_value();
-                    ()
-                },
-            );
-            */
         }
 
         fn advance_block() {
@@ -306,18 +362,14 @@ mod task_auction {
 
         /// Calls a payable message, increases the contract balance before
         /// invoking `f`.
-        fn call_payable<F>(
-            amount: Balance,
-            contract_id: AccountId,
-            from: AccountId,
-            selector: ink_env::call::Selector,
-            f: F,
-        ) where
+        fn call_payable<F>(amount: Balance, from: AccountId, selector: [u8; 4], f: F)
+        where
             F: FnOnce() -> (),
         {
+            let contract_id = contract_id();
             set_sender(from);
 
-            let mut data = ink_env::test::CallData::new(selector);
+            let mut data = ink_env::test::CallData::new(ink_env::call::Selector::new(selector));
             data.push_arg(&from);
 
             // Push the new execution context which sets `from` as caller and
