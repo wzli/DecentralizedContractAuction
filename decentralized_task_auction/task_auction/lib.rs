@@ -46,6 +46,14 @@ mod task_auction {
         deadline: Timestamp,
     }
 
+    #[ink(event)]
+    pub struct Transfer {
+        #[ink(topic)]
+        balance: Balance,
+        #[ink(topic)]
+        account: AccountId,
+    }
+
     impl TaskAuction {
         #[ink(constructor)]
         pub fn new(
@@ -72,7 +80,7 @@ mod task_auction {
         #[ink(message, payable, selector = "0xCAFEBABE")]
         pub fn bid(&mut self) {
             // only allow bids before deadline
-            assert!(self.is_open());
+            assert!(self.accepting_bids());
             // bid must be within %50 - %99 of previous bid
             assert!(Self::env().transferred_balance() * 2 > self.current_bid);
             assert!(Self::env().transferred_balance() * 100 < self.current_bid * 99);
@@ -88,9 +96,10 @@ mod task_auction {
         // TODO: add tests
         #[ink(message)]
         pub fn cancel(&mut self) {
+            assert!(!self.in_dispute());
             if Self::env().caller() == self.contractor {
                 // contractor cancelled
-                if self.is_open() {
+                if self.accepting_bids() {
                     // refund contractor if pre deadline
                     Self::transfer_or_terminate(self.current_bid, self.contractor);
                 }
@@ -101,7 +110,7 @@ mod task_auction {
                 );
             } else if Self::env().caller() == self.client {
                 // client cancelled, refund contractor and terminate auction
-                let refund = if self.is_open() {
+                let refund = if self.accepting_bids() {
                     self.current_bid
                 } else {
                     // full payment if past deadline
@@ -114,10 +123,28 @@ mod task_auction {
 
         #[ink(message)]
         pub fn confirm(&mut self, value: bool) {
-            assert!(!self.is_open());
+            assert!(!self.accepting_bids());
             let source = Self::env().caller();
-            // parse confirmation
-            if source == self.client {
+            // if in dispute, allow jury verdict or concession from either party
+            if self.in_dispute() {
+                if source == self.jury
+                    || ((source == self.client) && value)
+                    || ((source == self.contractor) && !value)
+                {
+                    // jury gets paid either way
+                    Self::transfer_or_terminate(self.current_bid, self.jury);
+                    Self::env().emit_event(Confirm { value, source });
+                    if value {
+                        // pay contractor if task deemed to be fulfilled
+                        Self::transfer_or_terminate(
+                            self.current_bid * Balance::from(self.pay_multiplier),
+                            self.contractor,
+                        );
+                    }
+                    Self::env().terminate_contract(self.client);
+                }
+                return;
+            } else if source == self.client {
                 self.client_confirm = Some(value);
                 Self::env().emit_event(Confirm { value, source });
                 // represent no bidder case as well
@@ -127,27 +154,17 @@ mod task_auction {
             } else if source == self.contractor {
                 self.contractor_confirm = Some(value);
                 Self::env().emit_event(Confirm { value, source });
+            } else {
+                return;
             }
             // check if termination conditions are satisfied
-            if let Some(true) = self.contractor_confirm {
-                if let Some(true) = self.client_confirm {
+            if self.contractor_confirm == Some(true) {
+                if self.client_confirm == Some(true) {
                     // mutually confirmed, pay contractor and terminate
                     Self::transfer_or_terminate(
                         self.current_bid * Balance::from(self.pay_multiplier),
                         self.contractor,
                     );
-                    Self::env().terminate_contract(self.client);
-                } else if source == self.jury {
-                    // let jury resolve dispute (for pay)
-                    Self::env().emit_event(Confirm { value, source });
-                    Self::transfer_or_terminate(self.current_bid, self.jury);
-                    if value {
-                        // pay contractor if task deemed to be fulfilled
-                        Self::transfer_or_terminate(
-                            self.current_bid * Balance::from(self.pay_multiplier),
-                            self.contractor,
-                        );
-                    }
                     Self::env().terminate_contract(self.client);
                 } else {
                     // dispute triggered
@@ -159,7 +176,7 @@ mod task_auction {
         #[ink(message)]
         pub fn extend_deadline(&mut self, extension: Timestamp) -> Timestamp {
             assert_eq!(Self::env().caller(), self.client);
-            assert!(self.is_open() || self.contractor == Self::env().account_id());
+            assert!(self.accepting_bids() || self.contractor == Self::env().account_id());
             self.deadline += extension;
             Self::env().emit_event(Extend {
                 deadline: self.deadline,
@@ -167,9 +184,28 @@ mod task_auction {
             self.deadline
         }
 
+        /// Predicates
+
         #[ink(message)]
-        pub fn is_open(&self) -> bool {
+        pub fn accepting_bids(&self) -> bool {
             Self::env().block_timestamp() < self.deadline
+        }
+
+        #[ink(message)]
+        pub fn in_dispute(&self) -> bool {
+            (self.contractor_confirm, self.client_confirm) == (Some(true), Some(false))
+        }
+
+        /// Getters
+
+        #[ink(message)]
+        pub fn get_description(&self) -> String {
+            self.description.clone()
+        }
+
+        #[ink(message)]
+        pub fn get_pay_multiplier(&self) -> u8 {
+            self.pay_multiplier
         }
 
         #[ink(message)]
@@ -177,7 +213,42 @@ mod task_auction {
             self.current_bid
         }
 
-        // helper functions
+        #[ink(message)]
+        pub fn get_contractor(&self) -> AccountId {
+            self.contractor
+        }
+
+        #[ink(message)]
+        pub fn get_client(&self) -> AccountId {
+            self.client
+        }
+
+        #[ink(message)]
+        pub fn get_jury(&self) -> AccountId {
+            self.jury
+        }
+
+        #[ink(message)]
+        pub fn get_deadline(&self) -> Timestamp {
+            self.deadline
+        }
+
+        #[ink(message)]
+        pub fn get_extension(&self) -> Timestamp {
+            self.extension
+        }
+
+        #[ink(message)]
+        pub fn get_contractor_confirm(&self) -> Option<bool> {
+            self.contractor_confirm
+        }
+
+        #[ink(message)]
+        pub fn get_client_confirm(&self) -> Option<bool> {
+            self.client_confirm
+        }
+
+        /// Internal Helpers
 
         fn update_bid(&mut self, bid: Balance, contractor: AccountId) {
             self.current_bid = bid;
@@ -195,6 +266,7 @@ mod task_auction {
             if let Err(_) = Self::env().transfer(account, balance) {
                 Self::env().terminate_contract(account);
             }
+            Self::env().emit_event(Transfer { balance, account });
         }
     }
 
@@ -253,7 +325,7 @@ mod task_auction {
         }
 
         #[ink::test]
-        #[should_panic(expected = "self.is_open()")]
+        #[should_panic(expected = "self.accepting_bids()")]
         fn bid_closed() {
             let mut task_auction = new_task_auction(1000, 1, BLOCK_DURATION, 0);
             advance_block();
@@ -275,9 +347,9 @@ mod task_auction {
             let endowment = 1000;
             let mut task_auction = new_task_auction(endowment, 1, BLOCK_DURATION, 0);
             // check that auction is closed before confirm
-            assert!(task_auction.is_open());
+            assert!(task_auction.accepting_bids());
             advance_block();
-            assert!(!task_auction.is_open());
+            assert!(!task_auction.accepting_bids());
             // non-client are ignored
             let accounts = default_accounts();
             set_sender(accounts.bob);
@@ -297,9 +369,9 @@ mod task_auction {
             );
             // ensure that original owner received full funds
             assert_eq!(alice_balance + endowment, get_balance(accounts.alice));
-            // one event for each confirm
+            // one event for each confirm, and one transfer event in termination
             let emitted_events = ink_env::test::recorded_events().collect::<Vec<_>>();
-            assert_eq!(2, emitted_events.len());
+            assert_eq!(3, emitted_events.len());
         }
 
         // helper functions
