@@ -444,7 +444,25 @@ mod task_auction {
         // TODO: add comfirm tests
 
         #[ink::test]
-        fn successful_auction() {}
+        fn successful_auction() {
+            let mut task_auction = on_going_auction();
+            assert!(task_auction.accepting_bids());
+            advance_block();
+            assert!(!task_auction.accepting_bids());
+            let client = task_auction.get_client();
+            let contractor = task_auction.get_contractor();
+            let bid = task_auction.get_current_bid();
+            let returned_funds = get_balance(contract_id())
+                - ((1 + task_auction.get_pay_multiplier()) as Balance * bid);
+            set_sender(contractor);
+            task_auction.confirm(true);
+            set_sender(client);
+            ink_env::test::assert_contract_termination::<ink_env::DefaultEnvironment, _>(
+                move || task_auction.confirm(true),
+                client,
+                returned_funds,
+            );
+        }
 
         #[ink::test]
         fn no_bidders() {
