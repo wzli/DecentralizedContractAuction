@@ -38,7 +38,12 @@ mod task_auction {
     }
 
     #[ink(event)]
-    pub struct Dispute {}
+    pub struct Dispute {
+        #[ink(topic)]
+        commission: Balance,
+        #[ink(topic)]
+        jury: AccountId,
+    }
 
     #[ink(event)]
     pub struct Extend {
@@ -128,6 +133,8 @@ mod task_auction {
                 };
                 Self::transfer_or_terminate(refund, self.contractor);
                 Self::env().terminate_contract(self.client);
+            } else {
+                panic!("unrelated caller");
             }
         }
 
@@ -152,8 +159,9 @@ mod task_auction {
                         );
                     }
                     Self::env().terminate_contract(self.client);
+                } else {
+                    panic!("unresolved dispute");
                 }
-                return;
             } else if source == self.client {
                 self.client_confirm = Some(value);
                 Self::env().emit_event(Confirm { value, source });
@@ -165,7 +173,7 @@ mod task_auction {
                 self.contractor_confirm = Some(value);
                 Self::env().emit_event(Confirm { value, source });
             } else {
-                return;
+                panic!("unrelated caller");
             }
             // check if termination conditions are satisfied
             if self.contractor_confirm == Some(true) {
@@ -178,7 +186,10 @@ mod task_auction {
                     Self::env().terminate_contract(self.client);
                 } else {
                     // dispute triggered
-                    Self::env().emit_event(Dispute {});
+                    Self::env().emit_event(Dispute {
+                        commission: self.current_bid,
+                        jury: self.jury,
+                    });
                 }
             }
         }
@@ -385,6 +396,14 @@ mod task_auction {
         }
 
         #[ink::test]
+        #[should_panic(expected = "unrelated caller")]
+        fn cancel_unrelated_caller() {
+            let mut task_auction = on_going_auction();
+            set_sender(default_accounts().eve);
+            task_auction.cancel();
+        }
+
+        #[ink::test]
         fn cancel_client_soft() {
             let mut task_auction = on_going_auction();
             assert!(task_auction.accepting_bids());
@@ -441,7 +460,78 @@ mod task_auction {
             assert_eq!(task_auction.get_contractor(), contract_id());
         }
 
-        // TODO: add comfirm tests
+        #[ink::test]
+        #[should_panic(expected = "unrelated caller")]
+        fn confirm_unrelated_caller() {
+            let mut task_auction = on_going_auction();
+            assert!(task_auction.accepting_bids());
+            advance_block();
+            assert!(!task_auction.accepting_bids());
+            // jury is ignored until dispute
+            set_sender(default_accounts().bob);
+            task_auction.confirm(true);
+        }
+
+        #[ink::test]
+        #[should_panic(expected = "unresolved dispute")]
+        fn confirm_unresolved_dispute() {
+            let mut task_auction = disputed_auction();
+            // confirm from client doesn't resolve dispute
+            task_auction.confirm(false);
+        }
+
+        #[ink::test]
+        fn dispute_verdict_client() {
+            let mut task_auction = disputed_auction();
+            let client = task_auction.get_client();
+            let contractor = task_auction.get_contractor();
+            let jury = task_auction.get_jury();
+            let contractor_balance = get_balance(contractor);
+            let client_balance = get_balance(client);
+            let jury_balance = get_balance(jury);
+            let contract_balance = get_balance(contract_id());
+            let commission = task_auction.get_current_bid();
+            set_sender(task_auction.get_jury());
+            ink_env::test::assert_contract_termination::<ink_env::DefaultEnvironment, _>(
+                move || task_auction.confirm(false),
+                client,
+                contract_balance - commission,
+            );
+            assert_eq!(
+                get_balance(client),
+                client_balance + contract_balance - commission
+            );
+            assert_eq!(get_balance(contractor), contractor_balance);
+            assert_eq!(get_balance(jury), jury_balance + commission);
+        }
+
+        #[ink::test]
+        fn dispute_verdict_contractor() {
+            let mut task_auction = disputed_auction();
+            let client = task_auction.get_client();
+            let contractor = task_auction.get_contractor();
+            let jury = task_auction.get_jury();
+            let contractor_balance = get_balance(contractor);
+            let client_balance = get_balance(client);
+            let jury_balance = get_balance(jury);
+            let contract_balance = get_balance(contract_id());
+            let commission = task_auction.get_current_bid();
+            set_sender(task_auction.get_jury());
+            ink_env::test::assert_contract_termination::<ink_env::DefaultEnvironment, _>(
+                move || task_auction.confirm(true),
+                client,
+                contract_balance - 3 * commission,
+            );
+            assert_eq!(
+                get_balance(client),
+                client_balance + contract_balance - (3 * commission)
+            );
+            assert_eq!(
+                get_balance(contractor),
+                contractor_balance + (2 * commission)
+            );
+            assert_eq!(get_balance(jury), jury_balance + commission);
+        }
 
         #[ink::test]
         fn successful_auction() {
@@ -473,12 +563,8 @@ mod task_auction {
             assert!(task_auction.accepting_bids());
             advance_block();
             assert!(!task_auction.accepting_bids());
-            // non-client are ignored
-            let accounts = default_accounts();
-            set_sender(accounts.bob);
-            task_auction.confirm(true);
-            task_auction.confirm(false);
             // if client terminate only if true
+            let accounts = default_accounts();
             set_sender(accounts.alice);
             task_auction.confirm(false);
             let alice_balance = get_balance(accounts.alice);
