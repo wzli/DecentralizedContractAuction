@@ -224,6 +224,11 @@ mod task_auction {
         }
 
         #[ink(message)]
+        pub fn get_current_pay(&self) -> Balance {
+            self.current_bid * self.pay_multiplier
+        }
+
+        #[ink(message)]
         pub fn get_contractor(&self) -> AccountId {
             self.contractor
         }
