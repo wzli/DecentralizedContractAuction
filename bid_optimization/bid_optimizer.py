@@ -11,7 +11,8 @@ class BidOptimizer:
         pass
 
     def utility_function(self, auction):
-        return auction.get_current_pay() - self.cost_function(auction)
+        return auction.get_current_pay() - self.cost_function(
+            auction, self.participating_auctions)
 
     def evaluate_and_bid(self, recompute_utilities=False):
         best_auctions = [None, None]
@@ -19,14 +20,14 @@ class BidOptimizer:
         for auction_id, auction in on_going_auctions.items():
             # delete expired auctions
             if not auction.accepting_bids():
+                # check if you won the auction
                 if auction.get_contractor() == self.caller:
                     won_auctions.append(auction)
                 del self.on_going_auctions[auction_id]
                 del self.utilities[auction_id]
                 continue
             if recompute_utilities:
-                self.utilities[auction_id] = self.utility_function(
-                    auction, self.participating_auctions)
+                self.utilities[auction_id] = self.utility_function(auction)
             # reject negative utilities
             if self.utilities[auction_id] <= 0:
                 continue
@@ -58,7 +59,6 @@ class BidOptimizer:
         # update utility only if bid was updated
         if auction_id not in self.on_going_auctions or auction.get_current_bid(
         ) != self.on_going_auctions[auction_id].get_current_bid():
-            self.utilities[auction_id] = self.utility_function(
-                auction, self.participating_auctions)
+            self.utilities[auction_id] = self.utility_function(auction)
         # store updated auction
         self.on_going_auctions[auction_id] = auction
