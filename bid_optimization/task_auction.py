@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 
-class TaskAuctionInterface:
+class TaskAuction:
     def __init__(self, caller, deposit, description, pay_multiplier, jury,
                  duration, extension):
         pass
@@ -58,7 +58,4 @@ class TaskAuctionInterface:
         pass
 
     def get_client_confirm(self):
-        pass
-
-    def get_timestamp():
         pass
