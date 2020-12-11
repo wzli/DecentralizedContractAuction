@@ -17,7 +17,12 @@ class BidOptimizer:
     def evaluate_and_bid(self, recompute_utilities=False):
         best_auctions = [None, None]
         won_auctions = []
-        for auction_id, auction in on_going_auctions.items():
+        for auction_id, auction in list(self.on_going_auctions.items()):
+            if auction_id in self.participating_auctions:
+                if auction.get_contractor() == self.caller:
+                    continue
+                else:
+                    del self.participating_auctions[auction_id]
             # delete expired auctions
             if not auction.accepting_bids():
                 # check if you won the auction
@@ -42,13 +47,17 @@ class BidOptimizer:
         if best_auctions[0] is not None:
             best_auction = self.on_going_auctions[best_auctions[0]]
             # TODO handle bidding errors
-            best_auction.bid(
-                self.caller,
-                best_auction.get_current_pay() -
-                self.utilities[best_auctions[0]] +
-                self.utilities[best_auctions[1]])
+            bid_price = min(
+                best_auction.get_current_bid() * 99 // 100,
+                max(
+                    best_auction.get_current_bid() // 2,
+                    best_auction.get_current_pay() -
+                    self.utilities[best_auctions[0]] +
+                    0 if best_auctions[1] is None else
+                    self.utilities[best_auctions[1]]))
+            best_auction.bid(self.caller, bid_price)
             self.participating_auctions[best_auctions[0]] = best_auction
-        return won_auctions
+        return best_auctions[0], won_auctions
 
     def on_auction_update(self, auction_id, auction):
         '''possible events: creation, bid, cancel,    extend, confirm'''

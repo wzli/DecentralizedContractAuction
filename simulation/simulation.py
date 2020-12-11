@@ -2,6 +2,7 @@
 
 import colorsys, math, random
 import pygame as pg
+import bid_optimizer
 
 pg.init()
 
@@ -38,8 +39,8 @@ class TaskAuction:
 
     def bid(self, caller, deposit):
         assert (self.accepting_bids())
-        assert (deposit * 2 > self.current_bid)
-        assert (deposit * 100 < self.current_bid * 99)
+        # assert (deposit * 2 >= self.current_bid)
+        # assert (deposit * 100 < self.current_bid * 99)
         assert (caller != self.jury)
         assert (caller != self.contractor)
         self.current_bid = deposit
@@ -52,9 +53,8 @@ class TaskAuction:
         assert (not self.accepting_bids())
         assert (caller == self.client or caller == self.contractor
                 or caller == self.jury)
-        payment = self.current_bid + self.get_current_pay()
-        self.contractor.balance += payment
-        self.client.balance += self.balance - payment
+        self.contractor.balance += self.get_current_pay()
+        self.client.balance += self.balance - self.get_current_pay()
 
     def accepting_bids(self):
         return get_time() < self.deadline
@@ -63,6 +63,9 @@ class TaskAuction:
         return self.contractor
 
     def get_current_pay(self):
+        return self.current_bid * self.pay_multiplier
+
+    def get_current_bid(self):
         return self.current_bid * self.pay_multiplier
 
 
@@ -77,6 +80,30 @@ class Agent:
             round(i * 255)
             for i in colorsys.hsv_to_rgb(random.uniform(0, 1), 1, 0.9))
         self.load = 0
+        self.bid_optimizer = bid_optimizer.BidOptimizer(
+            self.account, self.cost_function)
+        self.items = {}
+
+    def load_exceed(self, item):
+        return self.load + item.size**2 > self.size**2
+
+    def distance_to(self, coord):
+        return math.sqrt((self.pos[0] - coord[0])**2 +
+                         (self.pos[1] - coord[1])**2)
+
+    def cost_function(self, auction, participating_auctions):
+        item = self.items.get(auction.description)
+        if item is None or self.load_exceed(item):
+            return float('inf')
+        return self.distance_to(self.items.get(
+            auction.description).pos) * 100 / self.speed
+
+    def update(self):
+        bid_auction, won_auctions = self.bid_optimizer.evaluate_and_bid(False)
+        if bid_auction is not None:
+            self.items[self.bid_optimizer.participating_auctions[bid_auction].
+                       description].color = self.color
+        return bid_auction
 
     def display(self, screen):
         new_rect = pg.draw.circle(screen, self.color, self.pos, self.size)
@@ -112,16 +139,19 @@ class Simulation:
     def __init__(self, screen_size, agents, item_limit, price_variance):
         # fields
         self.account = BalanceAccount(0)
-        self.agents = agents
-        self.max_agent_size = max(agents, key=lambda x: x.size).size
-        self.min_agent_size = min(agents, key=lambda x: x.size).size
         self.item_limit = item_limit
         self.price_variance = price_variance
         self.items = {}
         self.auctions = {}
+        self.agents = agents
+        self.max_agent_size = max(agents, key=lambda x: x.size).size
+        self.min_agent_size = min(agents, key=lambda x: x.size).size
         self.entity_updates = []
         self.font = pg.font.SysFont(None, 24)
         self.counter = 0
+
+        for agent in self.agents:
+            agent.items = self.items
 
         # create window
         self.screen = pg.display.set_mode(screen_size)
@@ -142,6 +172,16 @@ class Simulation:
                                          and event.key == pg.K_ESCAPE):
                 return False
         self.spawn_items()
+        for agent in self.agents:
+            bid_update = agent.update()
+            if bid_update is not None:
+                auction_update = agent.bid_optimizer.participating_auctions[
+                    bid_update]
+                self.auctions[bid_update] = auction_update
+                for other_agent in self.agents:
+                    agent.bid_optimizer.on_auction_update(
+                        bid_update, auction_update)
+
         # display entities
         self.screen.blit(self.background, (0, 0))
         self.entity_updates += [
@@ -181,6 +221,10 @@ class Simulation:
             self.auctions[item_id] = TaskAuction(self.account, 2 * price,
                                                  item_id, 1, self.account, 5,
                                                  1)
+            # notify agents of new auction
+            for agent in self.agents:
+                agent.bid_optimizer.on_auction_update(item_id,
+                                                      self.auctions[item_id])
             self.counter += 1
 
 
