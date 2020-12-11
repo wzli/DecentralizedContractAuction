@@ -8,7 +8,7 @@ pg.init()
 
 def get_time():
     """Get time in seconds."""
-    return pg.time.get_time() // 1000
+    return pg.time.get_ticks() // 1000
 
 
 class BalanceAccount:
@@ -117,10 +117,11 @@ class Simulation:
         self.min_agent_size = min(agents, key=lambda x: x.size).size
         self.item_limit = item_limit
         self.price_variance = price_variance
-        self.items = []
-        self.auctions = []
+        self.items = {}
+        self.auctions = {}
         self.entity_updates = []
         self.font = pg.font.SysFont(None, 24)
+        self.counter = 0
 
         # create window
         self.screen = pg.display.set_mode(screen_size)
@@ -144,7 +145,8 @@ class Simulation:
         # display entities
         self.screen.blit(self.background, (0, 0))
         self.entity_updates += [
-            entity.display(self.screen) for entity in self.items + self.agents
+            entity.display(self.screen)
+            for entity in list(self.items.values()) + self.agents
         ]
         # display scores
         for i, agent in enumerate(self.agents):
@@ -174,7 +176,12 @@ class Simulation:
                 math.sqrt((pos[0] - self.screen.get_size()[0] // 2)**2 +
                           (pos[1] - self.screen.get_size()[1] // 2)**2)
             ) * size * size * random.randrange(1, self.price_variance + 1)
-            self.items.append(Item(price, size, pos))
+            item_id = str(self.counter)
+            self.items[item_id] = (Item(price, size, pos))
+            self.auctions[item_id] = TaskAuction(self.account, 2 * price,
+                                                 item_id, 1, self.account, 5,
+                                                 1)
+            self.counter += 1
 
 
 def main():
@@ -185,7 +192,7 @@ def main():
                   0, screen_size[0]), random.randrange(0, screen_size[1])))
         for i in range(5)
     ]
-    sim = Simulation(screen_size, agents, 30, 1)
+    sim = Simulation(screen_size, agents, item_limit=30, price_variance=1)
     sim.run(10)
 
 
