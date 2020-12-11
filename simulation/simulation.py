@@ -3,10 +3,17 @@
 import colorsys, math, random
 import pygame as pg
 
+pg.init()
+
 
 def get_time():
     """Get time in seconds."""
     return pg.time.get_time() // 1000
+
+
+class BalanceAccount:
+    def __init__(self, balance):
+        self.balance = balance
 
 
 class TaskAuction:
@@ -60,14 +67,16 @@ class TaskAuction:
 
 
 class Agent:
-    def __init__(self, size, pos=(0, 0)):
+    def __init__(self, size, speed, pos):
+        self.account = BalanceAccount(0)
         self.size = size
+        self.speed = speed
         self.pos = pos
         self.rect = pg.Rect(0, 0, 0, 0)
         self.color = tuple(
             round(i * 255)
-            for i in colorsys.hsv_to_rgb(random.uniform(0, 1), 1, 1))
-        self.load = size * size / 2
+            for i in colorsys.hsv_to_rgb(random.uniform(0, 1), 1, 0.9))
+        self.load = 0
 
     def display(self, screen):
         new_rect = pg.draw.circle(screen, self.color, self.pos, self.size)
@@ -79,6 +88,8 @@ class Agent:
 
 
 class Item:
+    font = pg.font.SysFont(None, 20)
+
     def __init__(self, price, size, pos):
         self.size = size
         self.pos = pos
@@ -91,7 +102,6 @@ class Item:
         new_rect = pg.draw.rect(
             screen, self.color,
             pg.Rect(top_left, (2 * self.size, 2 * self.size)))
-        Item.font = pg.font.SysFont(None, 16)
         text = Item.font.render(str(self.price), True, (0, 0, 0))
         dirty = screen.blit(text, top_left).union(new_rect.union(self.rect))
         self.rect = new_rect
@@ -101,15 +111,20 @@ class Item:
 class Simulation:
     def __init__(self, screen_size, agents, item_limit, price_variance):
         # fields
+        self.account = BalanceAccount(0)
         self.agents = agents
         self.max_agent_size = max(agents, key=lambda x: x.size).size
+        self.min_agent_size = min(agents, key=lambda x: x.size).size
         self.item_limit = item_limit
         self.price_variance = price_variance
         self.items = []
+        self.auctions = []
+        self.entity_updates = []
+        self.font = pg.font.SysFont(None, 24)
 
         # create window
         self.screen = pg.display.set_mode(screen_size)
-        pg.display.set_caption("Task Auction Simulation")
+        pg.display.set_caption("VRP Sim")
 
         # create background
         self.background = pg.Surface(self.screen.get_size())
@@ -128,10 +143,18 @@ class Simulation:
         self.spawn_items()
         # display entities
         self.screen.blit(self.background, (0, 0))
-        entity_updates = [
+        self.entity_updates += [
             entity.display(self.screen) for entity in self.items + self.agents
         ]
-        pg.display.update(entity_updates)
+        # display scores
+        for i, agent in enumerate(self.agents):
+            score = self.font.render(
+                f"(R {agent.size}, V {agent.speed}, P {agent.account.balance})",
+                True, agent.color)
+            self.entity_updates.append(self.screen.blit(score, (0, i * 20)))
+
+        pg.display.update(self.entity_updates)
+        self.entity_updates.clear()
         return True
 
     def run(self, hz):
@@ -141,7 +164,8 @@ class Simulation:
 
     def spawn_items(self):
         while len(self.items) < self.item_limit:
-            size = random.randrange(5, self.max_agent_size + 1)
+            size = random.randrange(self.min_agent_size // 2,
+                                    self.max_agent_size + 1)
             pos = (random.randrange(0,
                                     self.screen.get_size()[0]),
                    random.randrange(0,
@@ -154,11 +178,15 @@ class Simulation:
 
 
 def main():
-    pg.init()
-    agents = [Agent(10, (100, 100))]
-    sim = Simulation((640, 640), agents, 50, 1)
+    screen_size = (800, 800)
+    agents = [
+        Agent(random.randrange(10, 20), random.randrange(1, 5),
+              (random.randrange(
+                  0, screen_size[0]), random.randrange(0, screen_size[1])))
+        for i in range(5)
+    ]
+    sim = Simulation(screen_size, agents, 30, 1)
     sim.run(10)
-    pg.quit()
 
 
 if __name__ == "__main__":
