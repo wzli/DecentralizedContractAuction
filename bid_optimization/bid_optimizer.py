@@ -14,15 +14,9 @@ class BidOptimizer:
         return auction.get_current_pay() - self.cost_function(
             auction, self.participating_auctions)
 
-    def evaluate_and_bid(self, recompute_utilities=False):
-        best_auctions = [None, None]
+    def check_auction_results(self):
         won_auctions = []
         for auction_id, auction in list(self.on_going_auctions.items()):
-            if auction_id in self.participating_auctions:
-                if auction.get_contractor() == self.caller:
-                    continue
-                else:
-                    del self.participating_auctions[auction_id]
             # delete expired auctions
             if not auction.accepting_bids():
                 # check if you won the auction
@@ -31,10 +25,18 @@ class BidOptimizer:
                 del self.on_going_auctions[auction_id]
                 del self.utilities[auction_id]
                 continue
+        return won_auctions
+
+    def evaluate_and_bid(self, recompute_utilities=False):
+        best_auctions = [None, None]
+        for auction_id, auction in self.on_going_auctions.items():
             if recompute_utilities:
                 self.utilities[auction_id] = self.utility_function(auction)
             # reject negative utilities
             if self.utilities[auction_id] <= 0:
+                continue
+            # ignore already participating auctions
+            if auction_id in self.participating_auctions:
                 continue
             # find the highest utility auctions
             if best_auctions[0] is None or self.utilities[
@@ -47,17 +49,18 @@ class BidOptimizer:
         if best_auctions[0] is not None:
             best_auction = self.on_going_auctions[best_auctions[0]]
             # TODO handle bidding errors
-            bid_price = min(
-                best_auction.get_current_bid() * 99 // 100,
-                max(
-                    best_auction.get_current_bid() // 2,
-                    best_auction.get_current_pay() -
-                    self.utilities[best_auctions[0]] +
-                    0 if best_auctions[1] is None else
-                    self.utilities[best_auctions[1]]))
+            bid_price = best_auction.get_current_pay() - self.utilities[
+                best_auctions[0]]
+            if best_auctions[1] is not None:
+                bid_price += self.utilities[best_auctions[1]]
+            bid_price /= best_auction.pay_multiplier
+            bid_price = min(bid_price,
+                            (best_auction.get_current_bid() * 99 // 100) - 1)
+            bid_price = max(bid_price,
+                            (best_auction.get_current_bid() // 2) + 1)
             best_auction.bid(self.caller, bid_price)
             self.participating_auctions[best_auctions[0]] = best_auction
-        return best_auctions[0], won_auctions
+        return best_auctions[0]
 
     def on_auction_update(self, auction_id, auction):
         '''possible events: creation, bid, cancel,    extend, confirm'''

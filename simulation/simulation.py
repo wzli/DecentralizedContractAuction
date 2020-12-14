@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import colorsys, math, random
 import pygame as pg
@@ -31,16 +31,20 @@ class TaskAuction:
         self.deadline = get_time() + duration
         self.extension = extension
 
-    def extend(self, caller, extension):
+    def extend(self, caller, deposit, extension):
         assert (caller == self.client)
-        assert (self.accepting_bids() or self.contractor == self)
+        self.balance += deposit
+        if self.contractor == self:
+            self.current_bid = self.balance // (self.pay_multiplier + 1)
+        else:
+            assert (self.accepting_bids())
         self.deadline += extension
         return self.deadline
 
     def bid(self, caller, deposit):
         assert (self.accepting_bids())
-        # assert (deposit * 2 >= self.current_bid)
-        # assert (deposit * 100 < self.current_bid * 99)
+        assert (deposit * 2 >= self.current_bid)
+        assert (deposit * 100 < self.current_bid * 99)
         assert (caller != self.jury)
         assert (caller != self.contractor)
         self.current_bid = deposit
@@ -55,6 +59,7 @@ class TaskAuction:
                 or caller == self.jury)
         self.contractor.balance += self.get_current_pay()
         self.client.balance += self.balance - self.get_current_pay()
+        self.balance = 0
 
     def accepting_bids(self):
         return get_time() < self.deadline
@@ -70,15 +75,13 @@ class TaskAuction:
 
 
 class Agent:
-    def __init__(self, size, speed, pos):
+    def __init__(self, size, speed, pos, color):
         self.account = BalanceAccount(0)
         self.size = size
         self.speed = speed
         self.pos = pos
         self.rect = pg.Rect(0, 0, 0, 0)
-        self.color = tuple(
-            round(i * 255)
-            for i in colorsys.hsv_to_rgb(random.uniform(0, 1), 1, 0.9))
+        self.color = color
         self.load = 0
         self.bid_optimizer = bid_optimizer.BidOptimizer(
             self.account, self.cost_function)
@@ -99,10 +102,13 @@ class Agent:
             auction.description).pos) * 100 / self.speed
 
     def update(self):
-        bid_auction, won_auctions = self.bid_optimizer.evaluate_and_bid(False)
+        won_auctions = self.bid_optimizer.check_auction_results()
+        bid_auction = self.bid_optimizer.evaluate_and_bid(False)
         if bid_auction is not None:
-            self.items[self.bid_optimizer.participating_auctions[bid_auction].
-                       description].color = self.color
+            auction = self.bid_optimizer.participating_auctions[bid_auction]
+            item = self.items[auction.description]
+            item.color = self.color
+            item.price = round(auction.get_current_pay())
         return bid_auction
 
     def display(self, screen):
@@ -136,7 +142,8 @@ class Item:
 
 
 class Simulation:
-    def __init__(self, screen_size, agents, item_limit, price_variance):
+    def __init__(self, screen_size, agents, item_limit, price_variance,
+                 duration):
         # fields
         self.account = BalanceAccount(0)
         self.item_limit = item_limit
@@ -149,6 +156,7 @@ class Simulation:
         self.entity_updates = []
         self.font = pg.font.SysFont(None, 24)
         self.counter = 0
+        self.duration = duration
 
         for agent in self.agents:
             agent.items = self.items
@@ -172,16 +180,8 @@ class Simulation:
                                          and event.key == pg.K_ESCAPE):
                 return False
         self.spawn_items()
-        for agent in self.agents:
-            bid_update = agent.update()
-            if bid_update is not None:
-                auction_update = agent.bid_optimizer.participating_auctions[
-                    bid_update]
-                self.auctions[bid_update] = auction_update
-                for other_agent in self.agents:
-                    agent.bid_optimizer.on_auction_update(
-                        bid_update, auction_update)
-
+        self.update_agents()
+        self.bump_items()
         # display entities
         self.screen.blit(self.background, (0, 0))
         self.entity_updates += [
@@ -204,6 +204,28 @@ class Simulation:
         while self.update():
             clock.tick(hz)
 
+    def update_agents(self):
+        for agent in self.agents:
+            item_update = agent.update()
+            if item_update is not None:
+                auction_update = agent.bid_optimizer.participating_auctions[
+                    item_update]
+                self.auctions[item_update] = auction_update
+                for other_agent in self.agents:
+                    agent.bid_optimizer.on_auction_update(
+                        item_update, auction_update)
+
+    def bump_items(self):
+        # extend expired auctions
+        for item_id, auction in self.auctions.items():
+            if not auction.accepting_bids() and auction.get_contractor(
+            ) == auction:
+                self.items[item_id].price *= 2
+                auction.extend(self.account, self.items[item_id].price,
+                               self.duration)
+                for agent in self.agents:
+                    agent.bid_optimizer.on_auction_update(item_id, auction)
+
     def spawn_items(self):
         while len(self.items) < self.item_limit:
             size = random.randrange(self.min_agent_size // 2,
@@ -219,8 +241,8 @@ class Simulation:
             item_id = str(self.counter)
             self.items[item_id] = (Item(price, size, pos))
             self.auctions[item_id] = TaskAuction(self.account, 2 * price,
-                                                 item_id, 1, self.account, 5,
-                                                 1)
+                                                 item_id, 1, self.account,
+                                                 self.duration, 1)
             # notify agents of new auction
             for agent in self.agents:
                 agent.bid_optimizer.on_auction_update(item_id,
@@ -231,12 +253,20 @@ class Simulation:
 def main():
     screen_size = (800, 800)
     agents = [
-        Agent(random.randrange(10, 20), random.randrange(1, 5),
-              (random.randrange(
-                  0, screen_size[0]), random.randrange(0, screen_size[1])))
-        for i in range(5)
+        Agent(size=random.randrange(10, 20),
+              speed=random.randrange(1, 2),
+              pos=(random.randrange(0, screen_size[0]),
+                   random.randrange(0, screen_size[1])),
+              color=tuple(
+                  round(val * 255)
+                  for val in colorsys.hsv_to_rgb(i / 2, 1, 0.9)))
+        for i in range(2)
     ]
-    sim = Simulation(screen_size, agents, item_limit=30, price_variance=1)
+    sim = Simulation(screen_size,
+                     agents,
+                     item_limit=30,
+                     price_variance=1,
+                     duration=5)
     sim.run(10)
 
 

@@ -6,7 +6,7 @@ class TaskAuction:
                  duration, extension):
         pass
 
-    def extend(self, caller, extension):
+    def extend(self, caller, deposit, extension):
         pass
 
     def bid(self, caller, deposit):
