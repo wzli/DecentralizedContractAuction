@@ -12,6 +12,10 @@ def get_time():
     return pg.time.get_ticks() // 1000
 
 
+def distance(a, b):
+    return math.sqrt((a[0] - b[0])**2 + (a[1] - b[1])**2)
+
+
 class BalanceAccount:
     def __init__(self, balance):
         self.balance = balance
@@ -75,7 +79,7 @@ class TaskAuction:
 
 
 class Agent:
-    def __init__(self, size, speed, pos, color):
+    def __init__(self, size, speed, pos, color, dropoff):
         self.account = BalanceAccount(0)
         self.size = size
         self.speed = speed
@@ -83,40 +87,66 @@ class Agent:
         self.rect = pg.Rect(0, 0, 0, 0)
         self.color = color
         self.load = 0
+        self.itinerary = []
+        self.won_auctions = []
         self.bid_optimizer = bid_optimizer.BidOptimizer(
             self.account, self.cost_function)
         self.items = {}
+        self.dropoff = dropoff
+
+    def find_best_slot(self, auction):
+        best_slot = (None, float('inf'))
+        for i in range(len(self.itinerary) + 1):
+            pos = self.items[auction.description].pos
+            d1 = distance(
+                pos, self.dropoff if i == 0 else
+                self.items[self.itinerary[i - 1].description].pos)
+            d2 = distance(
+                pos, self.dropoff if i == len(self.itinerary) else
+                self.items[self.itinerary[i].description].pos)
+            d = d1 + d2
+            if d < best_slot[1]:
+                best_slot = (i, d)
+        return best_slot
 
     def load_exceed(self, item):
         return self.load + item.size**2 > self.size**2
-
-    def distance_to(self, coord):
-        return math.sqrt((self.pos[0] - coord[0])**2 +
-                         (self.pos[1] - coord[1])**2)
 
     def cost_function(self, auction, participating_auctions):
         item = self.items.get(auction.description)
         if item is None or self.load_exceed(item):
             return float('inf')
-        return self.distance_to(self.items.get(
-            auction.description).pos) * 100 / self.speed
+        i, d = self.find_best_slot(auction)
+        return d / self.speed
 
     def update(self):
-        won_auctions = self.bid_optimizer.check_auction_results()
-        bid_auction = self.bid_optimizer.evaluate_and_bid(False)
+        # update won and outbid auctions
+        self.won_auctions += self.bid_optimizer.check_auction_results()
+        # update itineray if outbid
+        for auction in list(self.itinerary):
+            if auction.description not in self.bid_optimizer.participating_auctions:  # and auction not in self.won_auctions:
+                self.load -= self.items[auction.description].size**2
+                self.itinerary.remove(auction)
+
+        bid_auction = self.bid_optimizer.evaluate_and_bid(True)
         if bid_auction is not None:
             auction = self.bid_optimizer.participating_auctions[bid_auction]
             item = self.items[auction.description]
             item.color = self.color
             item.price = round(auction.get_current_pay())
+            i, d = self.find_best_slot(auction)
+            self.itinerary.insert(i, auction)
+            self.load += item.size**2
+            print(d, (self.size**2), self.load,
+                  [auction.description for auction in self.itinerary])
         return bid_auction
 
     def display(self, screen):
         new_rect = pg.draw.circle(screen, self.color, self.pos, self.size)
         dirty = new_rect.union(self.rect)
         self.rect = new_rect
-        pg.draw.circle(screen, (180, ) * 3, self.pos,
-                       self.size * math.sqrt(self.load / self.size**2))
+        #pg.draw.circle(screen, (180, ) * 3, self.pos,
+        #               self.size * math.sqrt(self.load / self.size**2))
         return dirty
 
 
@@ -157,6 +187,7 @@ class Simulation:
         self.font = pg.font.SysFont(None, 24)
         self.counter = 0
         self.duration = duration
+        self.pause = False
 
         for agent in self.agents:
             agent.items = self.items
@@ -179,6 +210,11 @@ class Simulation:
             if event.type == pg.QUIT or (event.type == pg.KEYDOWN
                                          and event.key == pg.K_ESCAPE):
                 return False
+            elif event.type == pg.KEYDOWN and event.key == pg.K_SPACE:
+                self.pause = not self.pause
+                print(self.pause)
+        if self.pause:
+            return True
         self.spawn_items()
         self.update_agents()
         self.bump_items()
@@ -212,7 +248,7 @@ class Simulation:
                     item_update]
                 self.auctions[item_update] = auction_update
                 for other_agent in self.agents:
-                    agent.bid_optimizer.on_auction_update(
+                    other_agent.bid_optimizer.on_auction_update(
                         item_update, auction_update)
 
     def bump_items(self):
@@ -229,15 +265,13 @@ class Simulation:
     def spawn_items(self):
         while len(self.items) < self.item_limit:
             size = random.randrange(self.min_agent_size // 2,
-                                    self.max_agent_size + 1)
+                                    self.max_agent_size // 2 + 1)
             pos = (random.randrange(0,
                                     self.screen.get_size()[0]),
                    random.randrange(0,
                                     self.screen.get_size()[1]))
-            price = int(
-                math.sqrt((pos[0] - self.screen.get_size()[0] // 2)**2 +
-                          (pos[1] - self.screen.get_size()[1] // 2)**2)
-            ) * size * size * random.randrange(1, self.price_variance + 1)
+            price = int(4 * size**2 *
+                        random.randrange(1, self.price_variance + 1))
             item_id = str(self.counter)
             self.items[item_id] = (Item(price, size, pos))
             self.auctions[item_id] = TaskAuction(self.account, 2 * price,
@@ -253,14 +287,14 @@ class Simulation:
 def main():
     screen_size = (800, 800)
     agents = [
-        Agent(size=random.randrange(10, 20),
+        Agent(size=random.randrange(15, 30),
               speed=random.randrange(1, 2),
               pos=(random.randrange(0, screen_size[0]),
                    random.randrange(0, screen_size[1])),
               color=tuple(
                   round(val * 255)
-                  for val in colorsys.hsv_to_rgb(i / 2, 1, 0.9)))
-        for i in range(2)
+                  for val in colorsys.hsv_to_rgb(i / 6, 1, 0.9)),
+              dropoff=tuple(x / 2 for x in screen_size)) for i in range(6)
     ]
     sim = Simulation(screen_size,
                      agents,
