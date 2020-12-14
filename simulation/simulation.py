@@ -16,6 +16,15 @@ def distance(a, b):
     return math.sqrt((a[0] - b[0])**2 + (a[1] - b[1])**2)
 
 
+def inc_towards(a, b, inc):
+    dx = b[0] - a[0]
+    dy = b[1] - a[1]
+    dz = math.sqrt(dx**2 + dy**2)
+    dx *= inc / dz
+    dy *= inc / dz
+    return (a[0] + dx, a[1] + dy)
+
+
 class BalanceAccount:
     def __init__(self, balance):
         self.balance = balance
@@ -86,8 +95,10 @@ class Agent:
         self.pos = pos
         self.rect = pg.Rect(0, 0, 0, 0)
         self.color = color
-        self.load = 0
         self.itinerary = []
+        self.fill = 0
+        self.load = 0
+        self.next_itinerary = []
         self.won_auctions = []
         self.bid_optimizer = bid_optimizer.BidOptimizer(
             self.account, self.cost_function)
@@ -96,14 +107,14 @@ class Agent:
 
     def find_best_slot(self, auction):
         best_slot = (None, float('inf'))
-        for i in range(len(self.itinerary) + 1):
+        for i in range(len(self.next_itinerary) + 1):
             pos = self.items[auction.description].pos
             d1 = distance(
                 pos, self.dropoff if i == 0 else
-                self.items[self.itinerary[i - 1].description].pos)
+                self.items[self.next_itinerary[i - 1].description].pos)
             d2 = distance(
-                pos, self.dropoff if i == len(self.itinerary) else
-                self.items[self.itinerary[i].description].pos)
+                pos, self.dropoff if i == len(self.next_itinerary) else
+                self.items[self.next_itinerary[i].description].pos)
             d = d1 + d2
             if d < best_slot[1]:
                 best_slot = (i, d)
@@ -123,10 +134,40 @@ class Agent:
         # update won and outbid auctions
         self.won_auctions += self.bid_optimizer.check_auction_results()
         # update itineray if outbid
-        for auction in list(self.itinerary):
+        for auction in list(self.next_itinerary):
             if auction.description not in self.bid_optimizer.participating_auctions:  # and auction not in self.won_auctions:
                 self.load -= self.items[auction.description].size**2
-                self.itinerary.remove(auction)
+                self.next_itinerary.remove(auction)
+        # pick up items once all actions are confirmed
+        if not self.itinerary and len(self.won_auctions) == len(
+                self.next_itinerary):
+            for auction in self.next_itinerary:
+                item = self.items[auction.description]
+                item.color = tuple(x * 0.5 for x in item.color)
+            self.itinerary = list(self.next_itinerary + [None])
+            self.itinerary.reverse()
+            self.won_auctions = []
+            self.next_itinerary = []
+            self.load = 0
+        # move towards item to pickup
+        if self.itinerary:
+            if self.itinerary[-1] is None:
+                item = Item(0, 0, self.dropoff)
+            else:
+                item_id = self.itinerary[-1].description
+                item = self.items[item_id]
+            self.pos = inc_towards(self.pos, item.pos, self.speed)
+            # picked up item
+            if distance(self.pos, item.pos) < self.size + item.size:
+                if self.itinerary[-1]:
+                    self.fill += item.size**2
+                    self.itinerary[-1].confirm(self.account, True)
+                    del self.items[item_id]
+                else:
+                    self.fill = 0
+                del self.itinerary[-1]
+        else:
+            self.pos = inc_towards(self.pos, self.dropoff, self.speed)
 
         bid_auction = self.bid_optimizer.evaluate_and_bid(True)
         if bid_auction is not None:
@@ -135,18 +176,18 @@ class Agent:
             item.color = self.color
             item.price = round(auction.get_current_pay())
             i, d = self.find_best_slot(auction)
-            self.itinerary.insert(i, auction)
+            self.next_itinerary.insert(i, auction)
             self.load += item.size**2
-            print(d, (self.size**2), self.load,
-                  [auction.description for auction in self.itinerary])
+            #print(d, (self.size**2), self.load,
+            #      [auction.description for auction in self.next_itinerary])
         return bid_auction
 
     def display(self, screen):
         new_rect = pg.draw.circle(screen, self.color, self.pos, self.size)
         dirty = new_rect.union(self.rect)
         self.rect = new_rect
-        #pg.draw.circle(screen, (180, ) * 3, self.pos,
-        #               self.size * math.sqrt(self.load / self.size**2))
+        pg.draw.circle(screen, (180, ) * 3, self.pos,
+                       self.size * math.sqrt(self.fill / self.size**2))
         return dirty
 
 
@@ -227,7 +268,7 @@ class Simulation:
         # display scores
         for i, agent in enumerate(self.agents):
             score = self.font.render(
-                f"(R {agent.size}, V {agent.speed}, P {agent.account.balance})",
+                f"(R {agent.size}, V {agent.speed}, P {round(agent.account.balance)})",
                 True, agent.color)
             self.entity_updates.append(self.screen.blit(score, (0, i * 20)))
 
@@ -288,7 +329,7 @@ def main():
     screen_size = (800, 800)
     agents = [
         Agent(size=random.randrange(15, 30),
-              speed=random.randrange(1, 2),
+              speed=random.randrange(4, 8),
               pos=(random.randrange(0, screen_size[0]),
                    random.randrange(0, screen_size[1])),
               color=tuple(
@@ -300,8 +341,8 @@ def main():
                      agents,
                      item_limit=30,
                      price_variance=1,
-                     duration=5)
-    sim.run(10)
+                     duration=2)
+    sim.run(30)
 
 
 if __name__ == "__main__":

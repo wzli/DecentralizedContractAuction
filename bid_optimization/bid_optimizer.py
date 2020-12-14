@@ -68,9 +68,6 @@ class BidOptimizer:
         if auction_id in self.participating_auctions and auction.get_contractor(
         ) != self.caller:
             del self.participating_auctions[auction_id]
-        # update utility only if bid was updated
-        if auction_id not in self.on_going_auctions or auction.get_current_bid(
-        ) != self.on_going_auctions[auction_id].get_current_bid():
-            self.utilities[auction_id] = self.utility_function(auction)
         # store updated auction
         self.on_going_auctions[auction_id] = auction
+        self.utilities[auction_id] = self.utility_function(auction)
