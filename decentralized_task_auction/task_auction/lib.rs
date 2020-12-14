@@ -82,10 +82,16 @@ mod task_auction {
             }
         }
 
-        #[ink(message)]
+        #[ink(message, payable)]
         pub fn extend(&mut self, extension: Timestamp) -> Timestamp {
             assert_eq!(Self::env().caller(), self.client);
             assert!(self.accepting_bids() || self.contractor == Self::env().account_id());
+            // add
+            if self.contractor == Self::env().account_id() {
+                self.current_bid = Self::env().balance() / Balance::from(self.pay_multiplier + 1);
+            } else {
+                assert!(self.accepting_bids());
+            }
             self.deadline += extension;
             Self::env().emit_event(Extend {
                 deadline: self.deadline,
@@ -225,7 +231,7 @@ mod task_auction {
 
         #[ink(message)]
         pub fn get_current_pay(&self) -> Balance {
-            self.current_bid * self.pay_multiplier
+            self.current_bid * Balance::from(self.pay_multiplier)
         }
 
         #[ink(message)]
