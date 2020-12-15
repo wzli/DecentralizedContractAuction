@@ -95,6 +95,7 @@ class Agent:
         self.pos = pos
         self.rect = pg.Rect(0, 0, 0, 0)
         self.color = color
+        self.gray_color = tuple(((x - 127) * 0.4 + 127 for x in color))
         self.itinerary = []
         self.fill = 0
         self.load = 0
@@ -142,7 +143,7 @@ class Agent:
                 self.next_itinerary):
             for auction in self.next_itinerary:
                 item = self.items[auction.description]
-                item.color = tuple(x * 0.5 for x in item.color)
+                item.color = self.gray_color
             self.itinerary = list(self.next_itinerary + [None])
             self.itinerary.reverse()
             self.won_auctions = []
@@ -186,7 +187,7 @@ class Agent:
         new_rect = pg.draw.circle(screen, self.color, self.pos, self.size)
         dirty = new_rect.union(self.rect)
         self.rect = new_rect
-        pg.draw.circle(screen, (180, ) * 3, self.pos,
+        pg.draw.circle(screen, self.gray_color, self.pos,
                        self.size * math.sqrt(self.fill / self.size**2))
         return dirty
 

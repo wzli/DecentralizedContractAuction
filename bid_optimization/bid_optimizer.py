@@ -38,9 +38,6 @@ class BidOptimizer:
             # ignore already participating auctions
             if auction_id in self.participating_auctions:
                 continue
-            # can not outbid anything lower than 2
-            if auction.get_current_bid() <= 2:
-                continue
             # find the highest utility auctions
             if best_auctions[0] is None or self.utilities[
                     auction_id] > self.utilities[best_auctions[0]]:
@@ -64,7 +61,10 @@ class BidOptimizer:
             bid_price = max(bid_price,
                             (best_auction.get_current_bid() // 2) + 1)
             # TODO handle bidding errors
-            best_auction.bid(self.caller, bid_price)
+            try:
+                best_auction.bid(self.caller, bid_price)
+            except AssertionError:
+                return None
             self.participating_auctions[best_auctions[0]] = best_auction
         return best_auctions[0]
 
