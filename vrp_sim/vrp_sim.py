@@ -110,13 +110,11 @@ class Agent:
         best_slot = (None, float('inf'))
         for i in range(len(self.next_itinerary) + 1):
             pos = self.items[auction.description].pos
-            d1 = distance(
-                pos, self.dropoff if i == 0 else
-                self.items[self.next_itinerary[i - 1].description].pos)
-            d2 = distance(
-                pos, self.dropoff if i == len(self.next_itinerary) else
-                self.items[self.next_itinerary[i].description].pos)
-            d = d1 + d2
+            p1 = self.dropoff if i == 0 else self.items[self.next_itinerary[
+                i - 1].description].pos
+            p2 = self.dropoff if i == len(self.next_itinerary) else self.items[
+                self.next_itinerary[i].description].pos
+            d = distance(pos, p1) + distance(pos, p2) - distance(p1, p2)
             if d < best_slot[1]:
                 best_slot = (i, d)
         return best_slot
@@ -244,7 +242,7 @@ class Simulation:
         self.background = self.background.convert()
         self.background.fill((255, ) * 3)
         pg.draw.circle(self.background, (0, ) * 3,
-                       [coord / 2 for coord in self.screen.get_size()], 4)
+                       [coord / 2 for coord in self.screen.get_size()], 5)
         self.screen.blit(self.background, (0, 0))
         pg.display.flip()
 
@@ -255,7 +253,7 @@ class Simulation:
                 return False
             elif event.type == pg.KEYDOWN and event.key == pg.K_SPACE:
                 self.pause = not self.pause
-                print(self.pause)
+                print("PAUSE", self.pause)
         if self.pause:
             return True
         self.spawn_items()
@@ -274,7 +272,8 @@ class Simulation:
                 True, agent.color)
             self.entity_updates.append(self.screen.blit(score, (0, i * 20)))
 
-        pg.display.update(self.entity_updates)
+        #pg.display.update(self.entity_updates)
+        pg.display.flip()
         self.entity_updates.clear()
         return True
 
