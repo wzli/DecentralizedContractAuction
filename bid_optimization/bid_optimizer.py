@@ -60,7 +60,7 @@ class BidOptimizer:
             # scale bid to expected deposit range
             bid_price //= best_auction.pay_multiplier
             bid_price = min(bid_price,
-                            (best_auction.get_current_bid() * 99 // 100))
+                            (best_auction.get_current_bid() * 99 // 100) - 1)
             bid_price = max(bid_price,
                             (best_auction.get_current_bid() // 2) + 1)
             # TODO handle bidding errors

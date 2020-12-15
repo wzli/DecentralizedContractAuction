@@ -127,7 +127,7 @@ class Agent:
         if item is None or self.load_exceed(item):
             return float('inf')
         i, d = self.find_best_slot(auction)
-        return d / self.speed
+        return round(d / self.speed)
 
     def update(self):
         # update won and outbid auctions
