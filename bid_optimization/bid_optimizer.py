@@ -48,16 +48,19 @@ class BidOptimizer:
         # bid on the best auction at a price of decision boundary between second best
         if best_auctions[0] is not None:
             best_auction = self.on_going_auctions[best_auctions[0]]
-            # TODO handle bidding errors
+            # initially set price equivalent to break even cost
             bid_price = best_auction.get_current_pay() - self.utilities[
                 best_auctions[0]]
+            # increase price such that utility is equivalent to second best option
             if best_auctions[1] is not None:
                 bid_price += self.utilities[best_auctions[1]]
-            bid_price /= best_auction.pay_multiplier
+            # scale bid to expected deposit range
+            bid_price //= best_auction.pay_multiplier
             bid_price = min(bid_price,
                             (best_auction.get_current_bid() * 99 // 100) - 1)
             bid_price = max(bid_price,
                             (best_auction.get_current_bid() // 2) + 1)
+            # TODO handle bidding errors
             best_auction.bid(self.caller, bid_price)
             self.participating_auctions[best_auctions[0]] = best_auction
         return best_auctions[0]

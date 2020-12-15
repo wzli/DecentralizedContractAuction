@@ -104,6 +104,7 @@ class Agent:
             self.account, self.cost_function)
         self.items = {}
         self.dropoff = dropoff
+        self.total = 0
 
     def find_best_slot(self, auction):
         best_slot = (None, float('inf'))
@@ -161,6 +162,7 @@ class Agent:
             if distance(self.pos, item.pos) < self.size + item.size:
                 if self.itinerary[-1]:
                     self.fill += item.size**2
+                    self.total += item.size**2
                     self.itinerary[-1].confirm(self.account, True)
                     del self.items[item_id]
                 else:
@@ -268,7 +270,7 @@ class Simulation:
         # display scores
         for i, agent in enumerate(self.agents):
             score = self.font.render(
-                f"(R {agent.size}, V {agent.speed}, P {round(agent.account.balance)})",
+                f"(R {agent.size}, V {agent.speed}, T {agent.total}, P {round(agent.account.balance)})",
                 True, agent.color)
             self.entity_updates.append(self.screen.blit(score, (0, i * 20)))
 

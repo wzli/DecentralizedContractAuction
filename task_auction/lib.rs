@@ -86,7 +86,7 @@ mod task_auction {
         pub fn extend(&mut self, extension: Timestamp) -> Timestamp {
             assert_eq!(Self::env().caller(), self.client);
             assert!(self.accepting_bids() || self.contractor == Self::env().account_id());
-            // add
+            // add funds on extend call
             if self.contractor == Self::env().account_id() {
                 self.current_bid = Self::env().balance() / Balance::from(self.pay_multiplier + 1);
             } else {
