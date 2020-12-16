@@ -20,6 +20,8 @@ def inc_towards(a, b, inc):
     dx = b[0] - a[0]
     dy = b[1] - a[1]
     dz = math.sqrt(dx**2 + dy**2)
+    if dz < inc:
+        return b
     dx *= inc / dz
     dy *= inc / dz
     return (a[0] + dx, a[1] + dy)
