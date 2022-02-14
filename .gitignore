@@ -4,3 +4,6 @@
 *.pyc
 *.pyo
 build/
+
+target/
+*.rs.bk
